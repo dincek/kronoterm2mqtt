@@ -295,9 +295,20 @@ enabled = true
 host = "127.0.0.1"
 port = 8099
 stale_after_seconds = 60
+restart_after_seconds = 300  # 0 disables the watchdog
 ```
 
-Note that a `HEALTHCHECK` alone does not restart the container - plain Docker Compose only marks it unhealthy. Use it as a monitoring signal, or add a watchdog such as [autoheal](https://github.com/willfarrell/docker-autoheal) if you want automatic recovery.
+### Automatic restart
+
+Docker does not restart a container just because its `HEALTHCHECK` fails - it only marks it unhealthy. kronoterm2mqtt therefore watches its own state: after `restart_after_seconds` of continuous trouble it says why and ends the process, and the `restart: unless-stopped` policy starts it again.
+
+```
+Unhealthy for 300s: last Modbus read was 310.4s ago - exiting for a restart
+```
+
+The recovery stays inside the container this way. A watchdog container such as [autoheal](https://github.com/willfarrell/docker-autoheal) would do the same job, but only in exchange for the Docker socket - effectively root on the host - which defeats the hardening above.
+
+Set `restart_after_seconds = 0` if you would rather have the container stay up and unhealthy, e.g. while debugging.
 
 ### Modbus/TCP gateways that greet the connection
 
@@ -555,6 +566,7 @@ usage: ./dev-cli.py [-h] {coverage,expander-loop,expander-motors,expander-relay,
 [comment]: <> (✂✂✂ auto generated history start ✂✂✂)
 
 * [**dev**](https://github.com/kosl/kronoterm2mqtt/compare/v0.1.16...main)
+  * 2026-08-17 - Start even when the settings file cannot be written
   * 2026-08-17 - Add a health endpoint and container health check
   * 2026-08-17 - Ignore the greeting some Modbus/TCP gateways send
   * 2026-08-17 - Update README history

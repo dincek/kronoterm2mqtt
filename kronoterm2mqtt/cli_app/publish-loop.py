@@ -9,7 +9,7 @@ from ha_services.exceptions import InvalidStateValue
 from rich import print  # noqa
 
 from kronoterm2mqtt.cli_app import app
-from kronoterm2mqtt.health import HealthServer, HealthState
+from kronoterm2mqtt.health import HealthServer, HealthState, HealthWatchdog
 from kronoterm2mqtt.mqtt_connection import get_connected_client
 from kronoterm2mqtt.mqtt_handler import KronotermMqttHandler
 from kronoterm2mqtt.user_settings import UserSettings, get_user_settings
@@ -57,6 +57,10 @@ def publish_loop(verbosity: TyroVerbosityArgType):
     )
     if user_settings.health.enabled:
         HealthServer(state=health, host=user_settings.health.host, port=user_settings.health.port).start()
+        # Docker does not restart a container just because its HEALTHCHECK fails, so
+        # the process ends itself after a long outage and lets the restart policy
+        # start it again.
+        HealthWatchdog(state=health, restart_after_seconds=user_settings.health.restart_after_seconds).start()
 
     while True:
         started = time.monotonic()

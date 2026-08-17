@@ -57,6 +57,9 @@ class HealthCheck:
     host: str = '127.0.0.1'
     port: int = 8099
     stale_after_seconds: int = 60  # Data older than this counts as unhealthy
+    # Exit the process after this many seconds of trouble, so the container restart
+    # policy starts it again. Set to 0 to never restart on its own.
+    restart_after_seconds: int = 300
 
 
 @dataclasses.dataclass

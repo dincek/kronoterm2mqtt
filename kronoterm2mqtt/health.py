@@ -3,6 +3,8 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
+import os
+import sys
 import threading
 import time
 from typing import Callable, Optional
@@ -171,3 +173,92 @@ class HealthServer:
 
     def __exit__(self, *args):
         self.stop()
+
+
+def hard_exit(exit_code: int) -> None:
+    """Leave the process immediately, whatever the other threads are doing.
+
+    The publish loop can be stuck in a blocking socket call, where neither a signal
+    handler nor sys.exit() from this thread would get us out. Flush first, because
+    os._exit() skips the interpreter's cleanup.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+    logging.shutdown()
+    os._exit(exit_code)
+
+
+class HealthWatchdog:
+    """Ends the process when the loop has been unhealthy for too long.
+
+    Docker does not act on a failing HEALTHCHECK by itself, so the restart is left to
+    the container restart policy: the process exits non-zero and `restart:
+    unless-stopped` starts it again. That keeps the recovery inside the container
+    instead of handing the Docker socket to a watchdog container.
+    """
+
+    def __init__(
+        self,
+        state: HealthState,
+        restart_after_seconds: float,
+        check_interval: float = 15.0,
+        clock: Callable[[], float] = time.monotonic,
+        exit_func: Callable[[int], None] = hard_exit,
+    ):
+        self.state = state
+        self.restart_after_seconds = restart_after_seconds
+        self.check_interval = check_interval
+        self.clock = clock
+        self.exit_func = exit_func
+        self.unhealthy_since: Optional[float] = None
+        self.thread: Optional[threading.Thread] = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.restart_after_seconds > 0
+
+    def check(self) -> None:
+        """Look at the state once. Ends the process when the outage lasted too long."""
+        if not self.enabled:
+            return
+
+        health = self.state.as_dict()
+        if health['healthy']:
+            if self.unhealthy_since is not None:
+                logger.info('Healthy again, watchdog timer reset')
+            self.unhealthy_since = None
+            return
+
+        now = self.clock()
+        if self.unhealthy_since is None:
+            self.unhealthy_since = now
+            return
+
+        unhealthy_for = now - self.unhealthy_since
+        if unhealthy_for < self.restart_after_seconds:
+            return
+
+        problems = '; '.join(health['problems'])
+        logger.critical(f'Unhealthy for {unhealthy_for:.0f}s ({problems}) - exiting so the container restarts')
+        print(f'Unhealthy for {unhealthy_for:.0f}s: {problems} - exiting for a restart', flush=True)
+        self.exit_func(1)
+
+    def start(self) -> None:
+        if not self.enabled:
+            logger.info('Health watchdog is disabled ([health] restart_after_seconds = 0)')
+            return
+
+        logger.info(f'Health watchdog: restart after {self.restart_after_seconds}s of trouble')
+        self.thread = threading.Thread(target=self._run, name='health-watchdog', daemon=True)
+        self.thread.start()
+
+    def _run(self) -> None:
+        while True:
+            time.sleep(self.check_interval)
+            try:
+                self.check()
+            except Exception as e:  # noqa: BLE001 - a broken watchdog must not kill the loop
+                logger.error(f'Health watchdog check failed: {e}')

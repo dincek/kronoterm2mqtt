@@ -491,6 +491,7 @@ usage: ./dev-cli.py [-h] {coverage,expander-loop,expander-motors,expander-relay,
 [comment]: <> (✂✂✂ auto generated history start ✂✂✂)
 
 * [**dev**](https://github.com/kosl/kronoterm2mqtt/compare/v0.1.16...main)
+  * 2026-08-17 - Harden Docker setup and upgrade all dependencies
   * 2026-08-17 - Show Modbus retries in container logs
   * 2026-08-17 - Add TT3000 BMS Modbus register documentation
   * 2026-08-17 - Retry Modbus errors gracefully instead of crashing the container

@@ -10,7 +10,6 @@ from ha_services.mqtt4homeassistant.components.select import Select
 from ha_services.mqtt4homeassistant.components.sensor import Sensor
 from ha_services.mqtt4homeassistant.components.switch import Switch
 from ha_services.mqtt4homeassistant.device import BaseMqttDevice, MqttDevice
-from kronoterm2mqtt.mqtt_connection import get_connected_client
 from ha_services.mqtt4homeassistant.utilities.string_utils import slugify
 from paho.mqtt.client import Client
 from pymodbus.exceptions import ModbusException, ModbusIOException
@@ -28,6 +27,7 @@ from kronoterm2mqtt.constants import (
     MODBUS_WRITE_ATTEMPTS,
 )
 from kronoterm2mqtt.expander import ExpanderMqttHandler
+from kronoterm2mqtt.mqtt_connection import get_connected_client
 from kronoterm2mqtt.user_settings import UserSettings
 
 
@@ -87,7 +87,6 @@ class KronotermMqttHandler:
                 self.mqtt_client.disconnect()
             except Exception as e:  # noqa: BLE001
                 logger.warning(f'Error while closing MQTT client: {e}')
-
 
         BaseMqttDevice.device_uids = set()  # Reset
         BaseMqttDevice.components = {}  # Global registry of all components

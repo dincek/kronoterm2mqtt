@@ -1,15 +1,53 @@
 services:
   kronoterm2mqtt:
     build: .
+    image: kronoterm2mqtt:local
     container_name: kronoterm2mqtt
     restart: unless-stopped
-    # Serial devices for Modbus communication
+
+    # --- Least privilege -------------------------------------------------
+    # Unprivileged user baked into the image (see Dockerfile).
+    user: "65532:65532"
+    # Drop every Linux capability; the app only needs TCP egress and,
+    # optionally, read/write on a serial device.
+    cap_drop:
+      - ALL
+    # Block setuid binaries from raising privileges inside the container.
+    security_opt:
+      - no-new-privileges:true
+    # Immutable filesystem: everything the app needs is baked in or mounted.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    # PID 1 reaper so SIGTERM reaches the app and zombies get reaped.
+    init: true
+
+    # --- Resource limits (denial-of-service containment) ------------------
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Serial devices for Modbus communication.
+    # Not needed for Modbus/TCP. When using a USB RS485 adapter, the container
+    # user must be in the device's group on the host (dialout is GID 20 on
+    # Debian/Ubuntu, 18 on Alpine - check with `stat -c '%g' /dev/ttyUSB0`).
     # devices:
-      # - /dev/ttyUSB0:/dev/ttyUSB0
-      # Uncomment if using the custom ETERA expander module:
-      # - /dev/ttyUSB1:/dev/ttyUSB1
+    #   - /dev/ttyUSB0:/dev/ttyUSB0
+    #   # Uncomment if using the custom ETERA expander module:
+    #   - /dev/ttyUSB1:/dev/ttyUSB1
+    # group_add:
+    #   - "20"
+
     volumes:
-      # Persist configuration across container restarts
-      - ./config:/root/.config/kronoterm2mqtt
-      # Optional: mount TLS certificates (if using MQTT TLS)
+      # Settings, read-only: the app never needs to rewrite its own config.
+      # To change settings, see the "edit-settings" note in the README.
+      - ./config:/home/nonroot/.config/kronoterm2mqtt:ro
+      # TLS certificates for MQTT. Must be readable by UID 65532, e.g.:
+      #   sudo chown -R 65532:65532 ./config/certs && chmod 0600 ./config/certs/*.key
       - ./config/certs:/certs:ro

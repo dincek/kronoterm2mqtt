@@ -1,12 +1,33 @@
+# Keep the build context small and free of secrets.
+
+# Secrets and local state - never send these to the daemon
+config/
+*.key
+*.pem
+
+# Local virtualenvs / VCS / CI
 .venv-app/
+.venv/
 .git/
+.github/
+.pre-commit-config.yaml
+.pre-commit-hooks.yaml
+
+# Build and test artefacts
 *.egg-info
-__pycache__
+__pycache__/
 dist/
 coverage.*
 *.log
+.DS_Store
+
+# Documentation and hardware assets not needed at runtime
+images/
+*.pdf
+kronoterm2mqtt/tests/
+
+# Parts of the submodule that are not Python code
 etera-uart-bridge/.github/
 etera-uart-bridge/pcb/
 etera-uart-bridge/images/
 etera-uart-bridge/pio-eub-firmware/
-.github/

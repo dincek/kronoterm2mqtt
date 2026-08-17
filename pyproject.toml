@@ -10,7 +10,7 @@ authors = [
 requires-python = ">=3.11, <4"
 dependencies = [
     "ha-services >= 2.10.0",  # https://github.com/jedie/ha-services
-    "psutil < 7.2.0", # as per ha-services problem
+    "psutil >= 7.2.0",  # ha-services >= 2.15.3 imports psutil._ntuples (new in 7.2)
     "cli-base-utilities>=0.17.0",  # https://github.com/jedie/cli-base-utilities
     "pymodbus[serial] >= 3.10.0",  # https://github.com/pymodbus-dev/pymodbus/
     "bx_py_utils",  # https://github.com/boxine/bx_py_utils
@@ -59,7 +59,19 @@ path = "kronoterm2mqtt/__init__.py"
 requirements=["requirements.dev.txt"]
 strict=true
 require_hashes=true
-ignore-vuln=["GHSA-2c2j-9gv5-cj73", "GHSA-4xh5-x5gv-qwph", "GHSA-7f5h-v6xp-fcq8"] # starlette 0.46
+# All ignored advisories are starlette issues. starlette is a dev-only, transitive
+# dependency of platformio (which caps it to <0.53), so it is not part of the
+# runtime environment and never reaches the Docker image (built with --no-dev).
+ignore-vuln=[
+    "GHSA-2c2j-9gv5-cj73",
+    "GHSA-4xh5-x5gv-qwph",
+    "GHSA-7f5h-v6xp-fcq8",
+    "PYSEC-2026-161",
+    "PYSEC-2026-248",
+    "PYSEC-2026-249",
+    "PYSEC-2026-2280",
+    "PYSEC-2026-2281",
+]
 
 [tool.cli_base]
 version_module_name = "kronoterm2mqtt"  # Used by "update-readme-history" git hook
@@ -73,7 +85,10 @@ exclude = [
 
 [tool.ruff.lint]
 preview = true  # Needed for some of the rules
-extend-select = [
+# Explicit selection (instead of extend-select) so that the rule set does not
+# silently grow when ruff changes its defaults:
+select = [
+    "F", # pyflakes: https://docs.astral.sh/ruff/rules/#pyflakes-f
     "E", # pycodestyle: https://docs.astral.sh/ruff/rules/#error-e
     "I", # isort: https://docs.astral.sh/ruff/rules/#isort-i
 ]

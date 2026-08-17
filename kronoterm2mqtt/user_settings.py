@@ -39,6 +39,21 @@ class MqttTlsSettings:
 
 
 @dataclasses.dataclass
+class HealthCheck:
+    """
+    HTTP endpoint that reports whether MQTT, Modbus and publishing are working.
+
+    Used by the container HEALTHCHECK and by the "health" command. It listens on
+    localhost only by default, so nothing is exposed outside the container.
+    """
+
+    enabled: bool = True
+    host: str = '127.0.0.1'
+    port: int = 8099
+    stale_after_seconds: int = 60  # Data older than this counts as unhealthy
+
+
+@dataclasses.dataclass
 class HeatPump:
     """
     The "definitions_name" is the prefix of "kronoterm2mqtt/definitions/*.toml" files!
@@ -174,6 +189,9 @@ class UserSettings:
     mqtt_tls: dataclasses = dataclasses.field(default_factory=MqttTlsSettings)
 
     systemd: dataclasses = dataclasses.field(default_factory=SystemdServiceInfo)
+
+    # Health endpoint for the container health check:
+    health: dataclasses = dataclasses.field(default_factory=HealthCheck)
 
     heat_pump: dataclasses = dataclasses.field(default_factory=HeatPump)
 

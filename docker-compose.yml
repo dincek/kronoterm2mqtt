@@ -33,6 +33,13 @@ services:
         max-size: "10m"
         max-file: "3"
 
+    # Health endpoint (see Dockerfile HEALTHCHECK). It listens on localhost inside the
+    # container, so nothing is published. Status: `docker compose exec kronoterm2mqtt health`
+    # To scrape it from the host (e.g. Uptime Kuma), set `host = "0.0.0.0"` in the
+    # [health] section of the settings and uncomment - published on loopback only:
+    # ports:
+    #   - "127.0.0.1:8099:8099"
+
     # Serial devices for Modbus communication.
     # Not needed for Modbus/TCP. When using a USB RS485 adapter, the container
     # user must be in the device's group on the host (dialout is GID 20 on

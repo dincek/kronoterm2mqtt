@@ -6,6 +6,7 @@ from unittest.mock import patch
 from pymodbus.pdu.register_message import ReadHoldingRegistersResponse
 
 from kronoterm2mqtt.api import get_modbus_client
+from kronoterm2mqtt.tests.loopback import loopback_connection
 from kronoterm2mqtt.user_settings import HeatPump
 
 
@@ -63,22 +64,6 @@ class FakeGateway:
         for value in REGISTERS:
             payload += value.to_bytes(2, 'big')
         return transaction_id + b'\x00\x00' + len(payload).to_bytes(2, 'big') + payload
-
-
-def loopback_connection(address, timeout=None, source_address=None):
-    """Connect to the fake gateway.
-
-    The test suite denies socket.create_connection() to keep tests offline. These tests
-    only ever talk to a server they started themselves on 127.0.0.1, so they put a
-    loopback-only implementation back in place while they run.
-    """
-    host, _port = address
-    assert host == '127.0.0.1', f'Only loopback connections are allowed in tests, got {host!r}'
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    if timeout is not None:
-        sock.settimeout(timeout)
-    sock.connect(address)
-    return sock
 
 
 @patch('socket.create_connection', loopback_connection)

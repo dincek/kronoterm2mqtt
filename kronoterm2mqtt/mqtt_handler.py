@@ -27,6 +27,7 @@ from kronoterm2mqtt.constants import (
     MODBUS_WRITE_ATTEMPTS,
 )
 from kronoterm2mqtt.expander import ExpanderMqttHandler
+from kronoterm2mqtt.health import HealthState
 from kronoterm2mqtt.mqtt_connection import get_connected_client
 from kronoterm2mqtt.user_settings import UserSettings
 
@@ -35,13 +36,16 @@ logger = logging.getLogger(__name__)
 
 
 class KronotermMqttHandler:
-    def __init__(self, user_settings: UserSettings, verbosity: int):
+    def __init__(self, user_settings: UserSettings, verbosity: int, health: Optional[HealthState] = None):
         self.user_settings = user_settings
         self.verbosity = verbosity
+        self.health = health
         self.heat_pump = self.user_settings.heat_pump
         self.device_name = self.heat_pump.device_name
         self.mqtt_client = get_connected_client(user_settings=user_settings, verbosity=verbosity)
         self.mqtt_client.loop_start()
+        if self.health is not None:
+            self.health.set_mqtt_client(self.mqtt_client)
         self.modbus_client = None
         self.expander: Optional[ExpanderMqttHandler] = (
             ExpanderMqttHandler(self.mqtt_client, user_settings, verbosity)
@@ -339,6 +343,7 @@ class KronotermMqttHandler:
                 if isinstance(response, ExceptionResponse):
                     # The device answered with an error: retrying will not help.
                     logger.error(f'Modbus error response for {count} registers at {address_start}: {response}')
+                    self.record_modbus_failure(f'Error response for {count} registers at {address_start}: {response}')
                     return None
                 if not isinstance(response, ModbusIOException):
                     assert isinstance(response, ReadHoldingRegistersResponse), f'{response=}'
@@ -353,7 +358,12 @@ class KronotermMqttHandler:
                 self.reconnect_modbus()
 
         logger.error(f'Giving up reading {count} registers at {address_start} after {MODBUS_READ_ATTEMPTS} attempts')
+        self.record_modbus_failure(f'Giving up reading {count} registers at {address_start}')
         return None
+
+    def record_modbus_failure(self, error: str) -> None:
+        if self.health is not None:
+            self.health.record_modbus_failure(error)
 
     async def read_heat_pump_register_blocks(self) -> bool:
         """In order to minimize Modbus communication the register
@@ -363,17 +373,22 @@ class KronotermMqttHandler:
         Returns True only if every block was read successfully.
         """
         complete = True
+        read_any = False
         for address_start, address_end in self.address_ranges:
             count = address_end - address_start + 1
             response = await self.read_register_block(address_start, count)
             if response is None:
                 complete = False
                 continue
+            read_any = True
             for i in range(count):
                 value = response.registers[i]
                 self.registers[address_start + i] = value - (value >> 15 << 16)  # Convert value to signed integer
         if self.verbosity > 1:
             logger.info(f'Registers: {self.registers}')
+        if self.health is not None and read_any:
+            # A cycle where every block failed must not refresh the health timestamp.
+            self.health.record_modbus_read(complete=complete)
         return complete
 
     async def publish_loop(self):
@@ -394,6 +409,7 @@ class KronotermMqttHandler:
             if not complete:
                 logger.warning('Incomplete Modbus read, publishing only the registers that could be read')
 
+            published = 0
             for address in self.sensors:
                 if address not in self.registers:
                     continue
@@ -401,6 +417,7 @@ class KronotermMqttHandler:
                 value = float(scale * Decimal(self.registers[address]))
                 sensor.set_state(value)
                 sensor.publish(self.mqtt_client)
+                published += 1
             for address in self.binary_sensors:
                 if address not in self.registers:
                     continue
@@ -410,6 +427,7 @@ class KronotermMqttHandler:
                         value &= 1 << bit
                     sensor.set_state(sensor.ON if value else sensor.OFF)
                     sensor.publish(self.mqtt_client)
+                    published += 1
             for address in self.enum_sensors:
                 if address not in self.registers:
                     continue
@@ -420,11 +438,13 @@ class KronotermMqttHandler:
                         break
                 sensor.set_state(options['values'][_index])
                 sensor.publish(self.mqtt_client)
+                published += 1
             for address, switch in self.switches.items():
                 if address not in self.registers:
                     continue
                 switch.set_state(switch.ON if self.registers[address] else switch.OFF)
                 switch.publish(self.mqtt_client)
+                published += 1
             for address, (select, options) in self.selects.items():
                 if address not in self.registers:
                     continue
@@ -438,6 +458,10 @@ class KronotermMqttHandler:
                 if display_value is not None:
                     select.set_state(display_value)
                     select.publish(self.mqtt_client)
+                    published += 1
+
+            if self.health is not None and published:
+                self.health.record_publish(published_count=published)
 
             if self.expander is not None:
                 expander_addresses = (2102, 2023, 2015, 2044, 2046, 2043, 2000)

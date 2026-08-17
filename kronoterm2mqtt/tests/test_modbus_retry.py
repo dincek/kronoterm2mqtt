@@ -15,6 +15,7 @@ def make_handler(modbus_client) -> KronotermMqttHandler:
     """
     handler = object.__new__(KronotermMqttHandler)
     handler.verbosity = 0
+    handler.health = None
     handler.modbus_client = modbus_client
     handler.registers = {}
     handler.address_ranges = [(2100, 2102)]

@@ -50,7 +50,7 @@ The output of `./cli.py --help` looks like:
 
 [comment]: <> (✂✂✂ auto generated main help start ✂✂✂)
 ```
-usage: ./cli.py [-h] {edit-settings,print-registers,print-settings,print-values,probe-usb-ports,publish-loop,systemd-debug,systemd-remove,systemd-setup,systemd-status,systemd-stop,test-mqtt-connection,version}
+usage: ./cli.py [-h] {edit-settings,health,print-registers,print-settings,print-values,probe-usb-ports,publish-loop,systemd-debug,systemd-remove,systemd-setup,systemd-status,systemd-stop,test-mqtt-connection,version}
 
 
 
@@ -61,6 +61,8 @@ usage: ./cli.py [-h] {edit-settings,print-registers,print-settings,print-values,
 │ (required)                                                                             │
 │   • edit-settings         Edit the settings file. On first call: Create the default    │
 │                           one.                                                         │
+│   • health                Show the status of the running publish loop (MQTT, Modbus,   │
+│                           publishing)                                                  │
 │   • print-registers       Print RAW modbus register data                               │
 │   • print-settings        Display (anonymized) MQTT server username and password       │
 │   • print-values          Print all values from the definition                         │
@@ -251,6 +253,51 @@ devices:
 group_add:
   - "20"
 ```
+
+### Health check
+
+The publish loop serves its own status on `http://127.0.0.1:8099/health` **inside** the container - the port is not published, so nothing is reachable from outside. The image's `HEALTHCHECK` polls it every 30 s, which makes the state visible in `docker ps`:
+
+```bash
+$ docker ps
+NAMES            STATUS
+kronoterm2mqtt   Up 2 minutes (healthy)
+```
+
+For the details, ask the container itself:
+
+```bash
+$ docker compose exec kronoterm2mqtt health
+
+HEALTHY
+ MQTT          OK        mqtt.example.com
+ Last publish  1.2s ago  100 entities
+ Modbus        OK        192.168.1.2:502
+ Last read     1.3s ago
+ Failed reads  0
+ Uptime        32s
+```
+
+When something breaks, the command names it and exits non-zero:
+
+```
+UNHEALTHY
+  - last Modbus read was 26.1s ago
+  - last publish was 26.1s ago
+ Failed reads  7          Giving up reading 9 registers at 2053
+```
+
+A container counts as unhealthy when the MQTT client is disconnected, or the last successful Modbus read or publish is older than `stale_after_seconds`. Configure it in the settings:
+
+```toml
+[health]
+enabled = true
+host = "127.0.0.1"
+port = 8099
+stale_after_seconds = 60
+```
+
+Note that a `HEALTHCHECK` alone does not restart the container - plain Docker Compose only marks it unhealthy. Use it as a monitoring signal, or add a watchdog such as [autoheal](https://github.com/willfarrell/docker-autoheal) if you want automatic recovery.
 
 ### Modbus/TCP gateways that greet the connection
 
@@ -508,6 +555,7 @@ usage: ./dev-cli.py [-h] {coverage,expander-loop,expander-motors,expander-relay,
 [comment]: <> (✂✂✂ auto generated history start ✂✂✂)
 
 * [**dev**](https://github.com/kosl/kronoterm2mqtt/compare/v0.1.16...main)
+  * 2026-08-17 - Ignore the greeting some Modbus/TCP gateways send
   * 2026-08-17 - Update README history
   * 2026-08-17 - Harden Docker setup and upgrade all dependencies
   * 2026-08-17 - Show Modbus retries in container logs

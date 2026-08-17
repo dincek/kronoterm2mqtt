@@ -44,7 +44,7 @@ RUN pip install --no-cache-dir "uv==${UV_VERSION}"
 WORKDIR /app
 
 # Project metadata first, so the dependency layer is cached independently
-COPY uv.lock pyproject.toml README.md ./
+COPY uv.lock pyproject.toml README.md healthcheck.py ./
 
 # Submodule that kronoterm2mqtt/pyetera_uart_bridge symlinks into
 COPY etera-uart-bridge/pyetera-uart-bridge/pyetera-uart-bridge/ \
@@ -98,8 +98,17 @@ RUN apt-get update && \
 COPY --from=builder --chown=root:root /opt/venv /opt/venv
 COPY --from=builder --chown=root:root /app /app
 
+# "docker compose exec kronoterm2mqtt health" - exec skips the ENTRYPOINT, so the
+# status command needs a name of its own on PATH.
+RUN printf '#!/bin/sh\nexec /opt/venv/bin/kronoterm2mqtt_app health "$@"\n' > /usr/local/bin/health && \
+    chmod 0755 /usr/local/bin/health
+
 WORKDIR /app
 USER ${APP_UID}:${APP_GID}
+
+# The endpoint listens on localhost inside the container and is not published.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD ["/opt/venv/bin/python", "/app/healthcheck.py"]
 
 ENTRYPOINT ["/opt/venv/bin/kronoterm2mqtt_app"]
 # -v sets the log level to WARNING so Modbus retries and reconnects show up in

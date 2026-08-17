@@ -9,6 +9,7 @@ from ha_services.exceptions import InvalidStateValue
 from rich import print  # noqa
 
 from kronoterm2mqtt.cli_app import app
+from kronoterm2mqtt.health import HealthServer, HealthState
 from kronoterm2mqtt.mqtt_connection import get_connected_client
 from kronoterm2mqtt.mqtt_handler import KronotermMqttHandler
 from kronoterm2mqtt.user_settings import UserSettings, get_user_settings
@@ -46,11 +47,22 @@ def publish_loop(verbosity: TyroVerbosityArgType):
 
     restart_delay = RESTART_DELAY
 
+    # The health state outlives the handler on purpose: while the loop is restarting
+    # after a crash, the endpoint keeps answering and reports stale data instead of
+    # refusing the connection.
+    health = HealthState(
+        stale_after_seconds=user_settings.health.stale_after_seconds,
+        mqtt_host=user_settings.mqtt.host,
+        modbus_port=user_settings.heat_pump.port,
+    )
+    if user_settings.health.enabled:
+        HealthServer(state=health, host=user_settings.health.host, port=user_settings.health.port).start()
+
     while True:
         started = time.monotonic()
         try:
             print('[green]Starting Kronoterm 2 MQTT[/green]')
-            with KronotermMqttHandler(user_settings=user_settings, verbosity=verbosity) as mqtt_handler:
+            with KronotermMqttHandler(user_settings=user_settings, verbosity=verbosity, health=health) as mqtt_handler:
                 asyncio.run(mqtt_handler.publish_loop())
         except KeyboardInterrupt:
             raise

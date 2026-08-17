@@ -252,6 +252,23 @@ group_add:
   - "20"
 ```
 
+### Modbus/TCP gateways that greet the connection
+
+Many serial-to-TCP gateways send a "registration packet" - usually their MAC address - as soon as a client connects. Those bytes are not a Modbus frame, and a strict MBAP parser reads them as the beginning of one, which desynchronizes every following response:
+
+```
+ERROR    Invalid Modbus protocol id: 3729
+ERROR    Repeating....
+```
+
+kronoterm2mqtt discards whatever arrives before the first request and logs what it dropped:
+
+```
+WARNING  Discarded 6 unsolicited bytes sent by the Modbus gateway before the first request: 28 7a 0e 91 5e a9
+```
+
+If your gateway allows it, switching its "Registration Packet" setting off is still the cleaner fix.
+
 ### Viewing logs
 
 ```bash
@@ -491,6 +508,7 @@ usage: ./dev-cli.py [-h] {coverage,expander-loop,expander-motors,expander-relay,
 [comment]: <> (✂✂✂ auto generated history start ✂✂✂)
 
 * [**dev**](https://github.com/kosl/kronoterm2mqtt/compare/v0.1.16...main)
+  * 2026-08-17 - Update README history
   * 2026-08-17 - Harden Docker setup and upgrade all dependencies
   * 2026-08-17 - Show Modbus retries in container logs
   * 2026-08-17 - Add TT3000 BMS Modbus register documentation

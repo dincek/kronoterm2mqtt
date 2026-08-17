@@ -555,6 +555,7 @@ usage: ./dev-cli.py [-h] {coverage,expander-loop,expander-motors,expander-relay,
 [comment]: <> (✂✂✂ auto generated history start ✂✂✂)
 
 * [**dev**](https://github.com/kosl/kronoterm2mqtt/compare/v0.1.16...main)
+  * 2026-08-17 - Add a health endpoint and container health check
   * 2026-08-17 - Ignore the greeting some Modbus/TCP gateways send
   * 2026-08-17 - Update README history
   * 2026-08-17 - Harden Docker setup and upgrade all dependencies

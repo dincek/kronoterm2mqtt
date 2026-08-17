@@ -1,13 +1,16 @@
 import dataclasses
+import errno
 import logging
 import sys
 
 from bx_py_utils.path import assert_is_file
 from cli_base.systemd.data_classes import BaseSystemdServiceInfo, BaseSystemdServiceTemplateContext
 from cli_base.toml_settings.api import TomlSettings
+from cli_base.toml_settings.deserialize import toml2dataclass
 from ha_services.mqtt4homeassistant.data_classes import MqttSettings
 from rich import print  # noqa
 from rich.pretty import pprint
+import tomlkit
 
 from kronoterm2mqtt.constants import BASE_PATH
 
@@ -19,6 +22,9 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+# Errors that mean "this file is not ours to write", not "something is broken":
+READ_ONLY_ERRNOS = (errno.EROFS, errno.EACCES, errno.EPERM)
 
 
 @dataclasses.dataclass
@@ -203,8 +209,31 @@ class UserSettings:
         self.mqtt.host = 'mqtt.your-server.tld'
 
 
+class ReadOnlyTolerantTomlSettings(TomlSettings):
+    """Settings that can also be loaded from a file the app is not allowed to write.
+
+    When the settings file gains new keys (e.g. a new section after an upgrade),
+    cli_base writes them back and keeps a backup first. The container mounts the
+    settings read-only on purpose, so that write fails - but the values themselves are
+    already complete, and refusing to start over a file the app is not supposed to
+    modify would be worse than running with them.
+    """
+
+    def get_user_settings(self, *, debug: bool = False) -> dataclasses:
+        try:
+            return super().get_user_settings(debug=debug)
+        except OSError as err:
+            if err.errno not in READ_ONLY_ERRNOS:
+                raise
+            logger.warning(f'Cannot update the settings file ({err}) - continuing with the values as they are')
+            print(f'[yellow]Settings file is read-only ({err.strerror}), not updating it')
+            document = tomlkit.loads(self.file_path.read_text(encoding='UTF-8'))
+            toml2dataclass(document=document, instance=self.settings_dataclass)
+            return self.settings_dataclass
+
+
 def get_toml_settings() -> TomlSettings:
-    return TomlSettings(
+    return ReadOnlyTolerantTomlSettings(
         dir_name='kronoterm2mqtt',
         file_name='kronoterm2mqtt',
         settings_dataclass=UserSettings(),

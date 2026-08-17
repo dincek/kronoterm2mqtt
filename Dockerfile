@@ -26,4 +26,6 @@ RUN rm -rf kronoterm2mqtt/pyetera_uart_bridge && \
 RUN python3 cli.py --help
 
 ENTRYPOINT ["python3", "cli.py"]
-CMD ["publish-loop"]
+# -v sets the log level to WARNING so Modbus retries and reconnects show up in
+# the container logs. Override with `command:` in compose for more/less output.
+CMD ["publish-loop", "-v"]

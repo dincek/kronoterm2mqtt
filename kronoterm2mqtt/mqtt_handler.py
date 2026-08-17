@@ -463,7 +463,9 @@ class KronotermMqttHandler:
                         logger.warning(f'Expander update cancelled! {e}')
                         raise
 
-            if self.verbosity:
+            # The countdown is per cycle, so keep it out of -v: that level is for
+            # warnings (Modbus retries) which should stay readable in container logs.
+            if self.verbosity > 1:
                 print('\nWait', end='...', flush=True)
                 for i in range(self.user_settings.heat_pump.pooling_interval, 0, -1):
                     await asyncio.sleep(1)

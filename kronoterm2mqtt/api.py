@@ -3,6 +3,7 @@ import logging
 from pymodbus.client import ModbusSerialClient, ModbusTcpClient
 from rich.pretty import pprint
 
+from kronoterm2mqtt.constants import MODBUS_TCP_MIN_TIMEOUT
 from kronoterm2mqtt.user_settings import HeatPump
 
 
@@ -31,7 +32,7 @@ def get_modbus_client(heat_pump: HeatPump, definitions: dict, verbosity: int) ->
         host_port = heat_pump.port.rsplit(':', 1)
         host = host_port[0]
         port = int(host_port[1]) if len(host_port) > 1 else 502
-        client = ModbusTcpClient(host=host, port=port)
+        client = ModbusTcpClient(host=host, port=port, timeout=max(heat_pump.timeout, MODBUS_TCP_MIN_TIMEOUT))
         
     if verbosity > 1:
         print('connected:', client.connect())

@@ -16,6 +16,10 @@ from kronoterm2mqtt.user_settings import UserSettings, get_user_settings
 
 logger = logging.getLogger(__name__)
 
+RESTART_DELAY = 5  # Seconds to wait before the first restart attempt
+RESTART_DELAY_MAX = 300  # Upper bound for the exponential restart backoff
+RESTART_DELAY_RESET = 300  # A run lasting this long counts as healthy and resets the backoff
+
 
 @app.command
 def test_mqtt_connection(verbosity: TyroVerbosityArgType):
@@ -40,7 +44,10 @@ def publish_loop(verbosity: TyroVerbosityArgType):
     setup_logging(verbosity=verbosity)
     user_settings: UserSettings = get_user_settings(verbosity=verbosity)
 
+    restart_delay = RESTART_DELAY
+
     while True:
+        started = time.monotonic()
         try:
             print('[green]Starting Kronoterm 2 MQTT[/green]')
             with KronotermMqttHandler(user_settings=user_settings, verbosity=verbosity) as mqtt_handler:
@@ -48,10 +55,17 @@ def publish_loop(verbosity: TyroVerbosityArgType):
         except KeyboardInterrupt:
             raise
         except (InvalidStateValue, CancelledError) as e:
-            logging.error(f'Kronoterm2MQTT loop failed. USB problem? {e}. Restating in 5 seconds ...')
-            time.sleep(5)
+            logger.error(f'Kronoterm2MQTT loop failed. USB problem? {e}')
         except Exception as e:
             print(f'Error: {e}', type(e))
             logger.exception(f'Unhandled Exception: {e} {type(e)}')
-            exit(1)
+
+        if time.monotonic() - started >= RESTART_DELAY_RESET:
+            # The last run was healthy for a while, so start over with a short delay.
+            restart_delay = RESTART_DELAY
+
+        print(f'[yellow]Restarting in {restart_delay} seconds ...[/yellow]', flush=True)
+        logger.warning(f'Restarting Kronoterm2MQTT in {restart_delay} seconds ...')
+        time.sleep(restart_delay)
+        restart_delay = min(restart_delay * 2, RESTART_DELAY_MAX)
 

@@ -2,6 +2,7 @@ import asyncio
 from decimal import Decimal
 import itertools
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ha_services.mqtt4homeassistant.components.binary_sensor import BinarySensor
@@ -12,14 +13,20 @@ from ha_services.mqtt4homeassistant.device import BaseMqttDevice, MqttDevice
 from kronoterm2mqtt.mqtt_connection import get_connected_client
 from ha_services.mqtt4homeassistant.utilities.string_utils import slugify
 from paho.mqtt.client import Client
-from pymodbus.exceptions import ModbusIOException
+from pymodbus.exceptions import ModbusException, ModbusIOException
 from pymodbus.pdu import ExceptionResponse
 from pymodbus.pdu.register_message import ReadHoldingRegistersResponse
 from rich import print  # noqa
 
 import kronoterm2mqtt
 from kronoterm2mqtt.api import get_modbus_client
-from kronoterm2mqtt.constants import DEFAULT_DEVICE_MANUFACTURER, MODBUS_SLAVE_ID
+from kronoterm2mqtt.constants import (
+    DEFAULT_DEVICE_MANUFACTURER,
+    MODBUS_READ_ATTEMPTS,
+    MODBUS_RETRY_DELAY,
+    MODBUS_SLAVE_ID,
+    MODBUS_WRITE_ATTEMPTS,
+)
 from kronoterm2mqtt.expander import ExpanderMqttHandler
 from kronoterm2mqtt.user_settings import UserSettings
 
@@ -59,17 +66,29 @@ class KronotermMqttHandler:
         if self.verbosity:
             print('\nClosing MQTT and Modbus client.', end='...')
 
+        # Cleanup must not raise: it would mask the exception that caused the shutdown
+        # and stop the publish loop from restarting.
         if self.expander:
-            self.expander.stop()
-            print('expander stopped', flush=True)
+            try:
+                self.expander.stop()
+                print('expander stopped', flush=True)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f'Error while stopping expander: {e}')
 
         if self.modbus_client:
-            self.modbus_client.close()
-            
+            try:
+                self.modbus_client.close()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f'Error while closing Modbus client: {e}')
+
         if self.mqtt_client:
-            self.mqtt_client.loop_stop()
-            self.mqtt_client.disconnect()
-            
+            try:
+                self.mqtt_client.loop_stop()
+                self.mqtt_client.disconnect()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f'Error while closing MQTT client: {e}')
+
+
         BaseMqttDevice.device_uids = set()  # Reset
         BaseMqttDevice.components = {}  # Global registry of all components
 
@@ -179,6 +198,37 @@ class KronotermMqttHandler:
         if self.verbosity > 1:
             print(f'Addresses: {addresses} Ranges: {len(self.address_ranges)}')
 
+    def write_register(self, address: int, value: int) -> bool:
+        """Write a single register, retrying with a reconnect on communication errors.
+
+        Called from the MQTT callback thread, so this blocks instead of awaiting.
+        """
+        for attempt in range(1, MODBUS_WRITE_ATTEMPTS + 1):
+            try:
+                response = self.modbus_client.write_register(address=address, value=value, device_id=MODBUS_SLAVE_ID)
+            except (ModbusException, OSError) as e:
+                logger.warning(
+                    f'Modbus write of {value} to {address} failed (attempt {attempt}/{MODBUS_WRITE_ATTEMPTS}): {e}'
+                )
+            else:
+                if isinstance(response, ExceptionResponse):
+                    # The device answered with an error: retrying will not help.
+                    logger.error(f'Modbus error response writing {value} to {address}: {response}')
+                    return False
+                if not isinstance(response, ModbusIOException):
+                    return True
+                logger.warning(
+                    f'Modbus IO error writing {value} to {address}'
+                    f' (attempt {attempt}/{MODBUS_WRITE_ATTEMPTS}): {response}'
+                )
+
+            if attempt < MODBUS_WRITE_ATTEMPTS:
+                time.sleep(MODBUS_RETRY_DELAY)
+                self.reconnect_modbus()
+
+        logger.error(f'Giving up writing {value} to {address} after {MODBUS_WRITE_ATTEMPTS} attempts')
+        return False
+
     def switch_callback(self, *, client: Client, component: Switch, old_state: str, new_state: str):
         """
         Generic callback for switch state changes.
@@ -197,7 +247,7 @@ class KronotermMqttHandler:
             return
 
         value = 1 if new_state == 'ON' else 0
-        success = self.modbus_client.write_register(address=address, value=value, device_id=MODBUS_SLAVE_ID)
+        success = self.write_register(address=address, value=value)
 
         if success:
             component.set_state(new_state)
@@ -235,7 +285,7 @@ class KronotermMqttHandler:
             logger.error(f'Could not find register value for display value {new_state}')
             return
 
-        success = self.modbus_client.write_register(address=address, value=value, device_id=MODBUS_SLAVE_ID)
+        success = self.write_register(address=address, value=value)
 
         if success:
             component.set_state(new_state)
@@ -251,25 +301,81 @@ class KronotermMqttHandler:
             b = list(b)  # noqa
             yield b[0][1], b[-1][1]  # noqa
 
-    def read_heat_pump_register_blocks(self):
+    def reconnect_modbus(self) -> bool:
+        """Close and reopen the Modbus connection. Returns True when connected."""
+        try:
+            self.modbus_client.close()
+        except Exception as e:  # noqa: BLE001 - closing must never break the retry loop
+            logger.debug(f'Ignoring error while closing Modbus client: {e}')
+
+        try:
+            connected = bool(self.modbus_client.connect())
+        except Exception as e:  # noqa: BLE001 - a failed reconnect is retried later
+            logger.warning(f'Modbus reconnect failed: {e}')
+            return False
+
+        if not connected:
+            logger.warning('Modbus reconnect failed: client is not connected')
+        elif self.verbosity:
+            print('Modbus reconnected', flush=True)
+        return connected
+
+    async def read_register_block(self, address_start: int, count: int) -> Optional[ReadHoldingRegistersResponse]:
+        """Read one register block, retrying with a reconnect on communication errors.
+
+        Returns None when all attempts failed, so the caller can skip this cycle
+        instead of crashing the publish loop.
+        """
+        for attempt in range(1, MODBUS_READ_ATTEMPTS + 1):
+            try:
+                response = self.modbus_client.read_holding_registers(
+                    address=address_start, count=count, device_id=MODBUS_SLAVE_ID
+                )
+            except (ModbusException, OSError) as e:
+                logger.warning(
+                    f'Modbus read of {count} registers at {address_start} failed'
+                    f' (attempt {attempt}/{MODBUS_READ_ATTEMPTS}): {e}'
+                )
+            else:
+                if isinstance(response, ExceptionResponse):
+                    # The device answered with an error: retrying will not help.
+                    logger.error(f'Modbus error response for {count} registers at {address_start}: {response}')
+                    return None
+                if not isinstance(response, ModbusIOException):
+                    assert isinstance(response, ReadHoldingRegistersResponse), f'{response=}'
+                    return response
+                logger.warning(
+                    f'Modbus IO error for {count} registers at {address_start}'
+                    f' (attempt {attempt}/{MODBUS_READ_ATTEMPTS}): {response}'
+                )
+
+            if attempt < MODBUS_READ_ATTEMPTS:
+                await asyncio.sleep(MODBUS_RETRY_DELAY)
+                self.reconnect_modbus()
+
+        logger.error(f'Giving up reading {count} registers at {address_start} after {MODBUS_READ_ATTEMPTS} attempts')
+        return None
+
+    async def read_heat_pump_register_blocks(self) -> bool:
         """In order to minimize Modbus communication the register
         values are fetched in ranges that are computed initially from
         definitions and then read in blocks (ranges)
+
+        Returns True only if every block was read successfully.
         """
+        complete = True
         for address_start, address_end in self.address_ranges:
             count = address_end - address_start + 1
-            response = self.modbus_client.read_holding_registers(
-                address=address_start, count=count, device_id=MODBUS_SLAVE_ID
-            )
-            if isinstance(response, (ExceptionResponse, ModbusIOException)):
-                logger.error(f'Error: {response}')
-            else:
-                assert isinstance(response, ReadHoldingRegistersResponse), f'{response=}'
-                for i in range(count):
-                    value = response.registers[i]
-                    self.registers[address_start + i] = value - (value >> 15 << 16)  # Convert value to signed integer
+            response = await self.read_register_block(address_start, count)
+            if response is None:
+                complete = False
+                continue
+            for i in range(count):
+                value = response.registers[i]
+                self.registers[address_start + i] = value - (value >> 15 << 16)  # Convert value to signed integer
         if self.verbosity > 1:
             logger.info(f'Registers: {self.registers}')
+        return complete
 
     async def publish_loop(self):
         # setup_logging(verbosity=self.verbosity)
@@ -285,13 +391,20 @@ class KronotermMqttHandler:
 
         print('Kronoterm to MQTT publish loop started...', flush=True)
         while True:
-            self.read_heat_pump_register_blocks()
+            complete = await self.read_heat_pump_register_blocks()
+            if not complete:
+                logger.warning('Incomplete Modbus read, publishing only the registers that could be read')
+
             for address in self.sensors:
+                if address not in self.registers:
+                    continue
                 sensor, scale = self.sensors[address]
                 value = float(scale * Decimal(self.registers[address]))
                 sensor.set_state(value)
                 sensor.publish(self.mqtt_client)
             for address in self.binary_sensors:
+                if address not in self.registers:
+                    continue
                 for bit, sensor in self.binary_sensors[address].items():
                     value = self.registers[address]
                     if bit is not None:
@@ -299,6 +412,8 @@ class KronotermMqttHandler:
                     sensor.set_state(sensor.ON if value else sensor.OFF)
                     sensor.publish(self.mqtt_client)
             for address in self.enum_sensors:
+                if address not in self.registers:
+                    continue
                 sensor, options = self.enum_sensors[address]
                 value = self.registers[address]
                 for _index, key in enumerate(options['keys']):
@@ -307,37 +422,46 @@ class KronotermMqttHandler:
                 sensor.set_state(options['values'][_index])
                 sensor.publish(self.mqtt_client)
             for address, switch in self.switches.items():
+                if address not in self.registers:
+                    continue
                 switch.set_state(switch.ON if self.registers[address] else switch.OFF)
                 switch.publish(self.mqtt_client)
-                for address, (select, _) in self.selects.items():
-                    if address in self.registers and address in self.selects:
-                        _, options = self.selects[address]
-                        register_value = self.registers[address]
-                        # Convert register value to display value
-                        display_value = None
-                        for index, key in enumerate(options['keys']):
-                            if register_value == key:
-                                display_value = options['values'][index]
-                                break
-                        if display_value is not None:
-                            select.set_state(display_value)
-                            select.publish(self.mqtt_client)
+            for address, (select, options) in self.selects.items():
+                if address not in self.registers:
+                    continue
+                register_value = self.registers[address]
+                # Convert register value to display value
+                display_value = None
+                for index, key in enumerate(options['keys']):
+                    if register_value == key:
+                        display_value = options['values'][index]
+                        break
+                if display_value is not None:
+                    select.set_state(display_value)
+                    select.publish(self.mqtt_client)
 
             if self.expander is not None:
-                try:
-                    await self.expander.update_sensors_and_control(
-                      outside_temperature=0.1 * self.registers[2102],  # outside temperature
-                      current_desired_dhw_temperature=0.1 * self.registers[2023],  # Current desired DHW temperature
-                      additional_source_enabled=self.registers[2015] > 0,  # Additional source activated
-                      loop_circulation_status=self.registers[2044] > 0,  # Loop 1 circulation pump status
-                      # Loop 1 temperature offset in ECO mode
-                      loop_temperature_offset_in_eco_mode=0.1 * self.registers[2046],
-                      loop_operation_status_on_schedule=self.registers[2043],  # Loop 1 operation status on schedule
-                      working_function=self.registers[2000],  # Heat pump heating=0, standby=5
-                    )
-                except asyncio.CancelledError as e:
-                    logger.warning(f'Expander update cancelled! {e}')
-                    raise
+                expander_addresses = (2102, 2023, 2015, 2044, 2046, 2043, 2000)
+                missing = [address for address in expander_addresses if address not in self.registers]
+                if missing:
+                    logger.warning(f'Skipping expander update, missing registers: {missing}')
+                else:
+                    try:
+                        await self.expander.update_sensors_and_control(
+                          outside_temperature=0.1 * self.registers[2102],  # outside temperature
+                          # Current desired DHW temperature
+                          current_desired_dhw_temperature=0.1 * self.registers[2023],
+                          additional_source_enabled=self.registers[2015] > 0,  # Additional source activated
+                          loop_circulation_status=self.registers[2044] > 0,  # Loop 1 circulation pump status
+                          # Loop 1 temperature offset in ECO mode
+                          loop_temperature_offset_in_eco_mode=0.1 * self.registers[2046],
+                          # Loop 1 operation status on schedule
+                          loop_operation_status_on_schedule=self.registers[2043],
+                          working_function=self.registers[2000],  # Heat pump heating=0, standby=5
+                        )
+                    except asyncio.CancelledError as e:
+                        logger.warning(f'Expander update cancelled! {e}')
+                        raise
 
             if self.verbosity:
                 print('\nWait', end='...', flush=True)
